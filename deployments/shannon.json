@@ -1,0 +1,10 @@
+{
+  "asset": "0x9c32F3827A1a99f0cf9B213de8b53eC3d57bb171",
+  "deployBlock": 464229997,
+  "operator": "0xDAE5FebAA545eD7F77188bf0ACd8e84eafcdb524",
+  "operatorRegistry": "0x15C7e8CE38F021c5b45d098AaD788f63090bF20A",
+  "pool": "0xD180195da5459C7a0DEA188ed61216ec43682b50",
+  "riskHandler": "0x7655a76b44aF4aFc6F6A3c653d33214E4735F676",
+  "timelock": "0xc40179E77237fcac8E0f589bd66E454f36e03594",
+  "vault": "0x03A1c7b3ee6C02639bdD62F2ff011AF73f2d7474"
+}

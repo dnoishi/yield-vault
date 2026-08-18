@@ -1,0 +1,28 @@
+{
+  "name": "clob-yield-vault",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "operator",
+    "apps/web"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "\"$HOME/.foundry/bin/forge\" test && npm run test --workspaces --if-present",
+    "test:local": "bash scripts/test-local.sh",
+    "test:shannon": "RUN_SHANNON_FORK=true \"$HOME/.foundry/bin/forge\" test --match-contract ShannonForkTest -vv && NETWORK=testnet YO_SYMBOL=WETH:USDso npm run doctor -w @yield-vault/operator",
+    "local:up": "bash scripts/local-up.sh",
+    "local:down": "bash scripts/local-down.sh",
+    "dev:web": "npm run dev -w @yield-vault/web",
+    "dev:operator": "npm run dev -w @yield-vault/operator",
+    "deploy": "bash scripts/deploy.sh"
+  },
+  "devDependencies": {
+    "@somnia-chain/reactivity-contracts": "latest"
+  }
+}
