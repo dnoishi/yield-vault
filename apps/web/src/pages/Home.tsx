@@ -116,7 +116,7 @@ export function Home() {
             <h3>DreamDEX market</h3>
             <p>Live venue data is separated from the vault’s on-chain dollar NAV.</p>
             <Metric label="Market mid" value={marketData?.mid?.toFixed(4) ?? metrics?.lastMid?.toFixed(4) ?? "—"} />
-            <Metric label="Open orders" value={analytics?.strategy.openOrders.toString() ?? "—"} />
+            <Metric label="Open orders" value={analytics?.strategy?.openOrders.toString() ?? "—"} />
           </div>
           <div className="glass overview-panel">
             <span className="panel-icon coral"><Icon name="safety" /></span>

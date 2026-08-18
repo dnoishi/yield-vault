@@ -70,11 +70,8 @@ set_railway_variable() {
 upsert_vercel_variable() {
   local name="$1"
   local value="$2"
-  if ! printf '%s' "$value" |
-    vercel env update "$name" production --yes >/dev/null 2>&1; then
-    printf '%s' "$value" |
-      vercel env add "$name" production --yes >/dev/null
-  fi
+  vercel env add "$name" production \
+    --force --value "$value" --yes --no-sensitive >/dev/null
 }
 
 require_command node

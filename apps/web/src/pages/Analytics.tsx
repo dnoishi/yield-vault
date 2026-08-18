@@ -46,7 +46,7 @@ export function Analytics() {
           value={strategyEarnings === undefined ? "Unavailable" : signedMoney(strategyEarnings)}
           tone={strategyEarnings === undefined ? "" : tone(strategyEarnings)}
         />
-        <Stat label="Open strategy orders" value={analytics?.strategy.openOrders.toString() ?? "—"} />
+        <Stat label="Open strategy orders" value={analytics?.strategy?.openOrders.toString() ?? "—"} />
         <Stat label="Estimated yield score" value={(metrics?.estimatedYieldScore ?? 0).toFixed(2)} />
       </section>
 

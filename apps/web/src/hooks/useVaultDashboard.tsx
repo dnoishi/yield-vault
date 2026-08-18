@@ -215,7 +215,9 @@ function useDashboardState() {
     return () => clearInterval(interval);
   }, [period]);
 
-  const strategyState = paused ? "halted" : analytics?.strategy.state ?? "offline";
+  const strategyState = paused
+    ? "halted"
+    : analytics?.strategy?.state ?? "offline";
   const strategyEarnings =
     analytics?.available && analytics.pnl.earnings !== null
       ? BigInt(analytics.pnl.earnings)

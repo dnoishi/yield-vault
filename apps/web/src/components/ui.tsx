@@ -67,7 +67,7 @@ export function StrategyStatus() {
         <small>STRATEGY</small>
         <strong>{strategyLabel(strategyState)}</strong>
         <span>
-          {analytics?.strategy.reason ??
+          {analytics?.strategy?.reason ??
             (paused ? "Emergency halt is active" : "Operator data unavailable")}
         </span>
       </div>
