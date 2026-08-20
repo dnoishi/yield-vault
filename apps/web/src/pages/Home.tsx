@@ -24,7 +24,9 @@ export function Home() {
     queued,
     metrics,
     marketData,
+    riskHandler,
   } = useVaultDashboard();
+  const deployed = totalAssets > idle ? totalAssets - idle : 0n;
 
   return (
     <>
@@ -41,7 +43,7 @@ export function Home() {
         <Stat label="Total value locked" value={money(totalAssets)} icon={<span className="stat-glyph">◇</span>} />
         <Stat label="Share price" value={`$${sharePrice.toFixed(4)}`} icon={<span className="stat-glyph coral">◈</span>} />
         <Stat
-          label="Strategy earnings"
+          label="Strategy P&L including losses"
           value={
             strategyEarnings === undefined
               ? analytics?.available === false ? "Not enough history" : "Unavailable"
@@ -58,9 +60,13 @@ export function Home() {
           <h2>Capital that stays<br />under your control.</h2>
           <p>
             Deposit USDso and receive composable vault shares. Exit instantly
-            when liquidity is available, or enter a fair FIFO queue.
+            when idle USDso is available, or enter a FIFO queue that pays out
+            as liquidity frees.
           </p>
           <Link className="text-link" to="/vault">Enter the vault <Icon name="arrow" /></Link>
+          <Link className="text-link secondary-link" to="/swap">
+            Need USDso? Mint 100 on testnet <Icon name="arrow" />
+          </Link>
         </div>
         <div className="glass visual-card vault-visual">
           <div className="visual-halo" />
@@ -72,7 +78,11 @@ export function Home() {
           <div className="floating-card offset">
             <small>QUEUED LIABILITIES</small>
             <strong>{money(queued)}</strong>
-            <span>Prioritized before instant exits</span>
+            <span>Queued — processing as liquidity frees</span>
+          </div>
+          <div className="capital-split">
+            <Metric label="Idle capital" value={money(idle)} />
+            <Metric label="Deployed capital" value={money(deployed)} />
           </div>
         </div>
       </section>
@@ -96,7 +106,7 @@ export function Home() {
           <article className="glass journey-card">
             <span>03</span>
             <h3>Track and redeem</h3>
-            <p>Follow live NAV and earnings, then exit instantly or through the fair FIFO queue.</p>
+            <p>Follow live NAV and earnings, then exit instantly or wait in the FIFO queue while liquidity frees.</p>
           </article>
         </div>
       </section>
@@ -117,6 +127,16 @@ export function Home() {
             <p>Live venue data is separated from the vault’s on-chain dollar NAV.</p>
             <Metric label="Market mid" value={marketData?.mid?.toFixed(4) ?? metrics?.lastMid?.toFixed(4) ?? "—"} />
             <Metric label="Open orders" value={analytics?.strategy?.openOrders.toString() ?? "—"} />
+            <Metric
+              label="Risk handler"
+              value={
+                !riskHandler.configured
+                  ? "Not configured"
+                  : riskHandler.subscriptionId > 0n
+                    ? "Active"
+                    : "Not subscribed"
+              }
+            />
           </div>
           <div className="glass overview-panel">
             <span className="panel-icon coral"><Icon name="safety" /></span>

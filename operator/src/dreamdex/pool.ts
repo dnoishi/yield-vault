@@ -11,6 +11,13 @@ import {
   SPOT_POOL_ABI,
   TOPIC_ORDER_PLACED,
 } from "./abi.js";
+import {
+  INCORRECT_ORDER_SELECTOR,
+  POST_ONLY_WOULD_CROSS_SELECTOR,
+  TransientDreamDexError,
+  isDreamDexError,
+  isStaleOrderError,
+} from "./errors.js";
 import { alignToLot, alignToTick, fromRaw, toRaw } from "./quant.js";
 
 export interface TopOfBook {
@@ -134,23 +141,13 @@ export class Pool {
   }
 
   async inventoryBalances(): Promise<{ base: number; quote: number }> {
-    const [base, quote, ids] = await Promise.all([
+    const [base, quote, orders] = await Promise.all([
       this.vaultBase(),
       this.vaultQuote(),
-      this.openOrderIds(),
+      this.activeOrders(),
     ]);
     let totalBase = base;
     let totalQuote = quote;
-    const orders = await Promise.all(
-      ids.map((orderId) =>
-        this.ctx.publicClient.readContract({
-          address: this.address,
-          abi: SPOT_POOL_ABI,
-          functionName: "getOrder",
-          args: [orderId],
-        }),
-      ),
-    );
     for (const order of orders) {
       if (order.quantityRemaining === 0n) continue;
       if (order.isBid) {
@@ -165,6 +162,10 @@ export class Pool {
     return { base: totalBase, quote: totalQuote };
   }
 
+  async activeOrderIds(): Promise<bigint[]> {
+    return (await this.activeOrders()).map((order) => order.orderId);
+  }
+
   async openOrderIds(): Promise<bigint[]> {
     const ids = await this.ctx.publicClient.readContract({
       address: this.address,
@@ -173,6 +174,31 @@ export class Pool {
       account: this.ctx.owner,
     });
     return [...ids];
+  }
+
+  private async activeOrders() {
+    const ids = await this.openOrderIds();
+    const orders = await Promise.all(
+      ids.map(async (orderId) => {
+        try {
+          const order = await this.ctx.publicClient.readContract({
+            address: this.address,
+            abi: SPOT_POOL_ABI,
+            functionName: "getOrder",
+            args: [orderId],
+          });
+          return order.owner.toLowerCase() === this.ctx.owner.toLowerCase()
+            ? order
+            : undefined;
+        } catch (error) {
+          if (isDreamDexError(error, INCORRECT_ORDER_SELECTOR)) {
+            return undefined;
+          }
+          throw error;
+        }
+      }),
+    );
+    return orders.filter((order) => order !== undefined);
   }
 
   async place(args: {
@@ -202,13 +228,24 @@ export class Pool {
       0n,
     ] as const;
 
-    const simulation = await this.ctx.publicClient.simulateContract({
-      address: this.address,
-      abi: SPOT_POOL_ABI,
-      functionName: "placeOrderFor",
-      args: callArgs,
-      account: this.ctx.account,
-    });
+    const simulation = await this.ctx.publicClient
+      .simulateContract({
+        address: this.address,
+        abi: SPOT_POOL_ABI,
+        functionName: "placeOrderFor",
+        args: callArgs,
+        account: this.ctx.account,
+      })
+      .catch((error: unknown) => {
+        if (isDreamDexError(error, POST_ONLY_WOULD_CROSS_SELECTOR)) {
+          throw new TransientDreamDexError(
+            "PostOnlyWouldCross",
+            POST_ONLY_WOULD_CROSS_SELECTOR,
+            { cause: error },
+          );
+        }
+        throw error;
+      });
     if (!simulation.result[0]) throw new Error("placeOrderFor simulation returned false");
     const hash = await this.ctx.walletClient.writeContract({
       ...simulation.request,
@@ -229,20 +266,37 @@ export class Pool {
     return { hash, orderId, gasUsed: receipt.gasUsed };
   }
 
-  async cancel(orderId: bigint): Promise<Hash> {
-    const simulation = await this.ctx.publicClient.simulateContract({
-      address: this.address,
-      abi: SPOT_POOL_ABI,
-      functionName: "cancelOrderFor",
-      args: [this.ctx.owner, orderId],
-      account: this.ctx.account,
-    });
-    const hash = await this.ctx.walletClient.writeContract({
-      ...simulation.request,
-      account: this.ctx.account,
-      chain: this.ctx.net.chain,
-    });
-    await this.ctx.publicClient.waitForTransactionReceipt({ hash });
+  async cancel(orderId: bigint): Promise<Hash | undefined> {
+    const simulation = await this.ctx.publicClient
+      .simulateContract({
+        address: this.address,
+        abi: SPOT_POOL_ABI,
+        functionName: "cancelOrderFor",
+        args: [this.ctx.owner, orderId],
+        account: this.ctx.account,
+      })
+      .catch((error: unknown) => {
+        if (isStaleOrderError(error)) return undefined;
+        throw error;
+      });
+    if (!simulation) return undefined;
+    const hash = await this.ctx.walletClient
+      .writeContract({
+        ...simulation.request,
+        account: this.ctx.account,
+        chain: this.ctx.net.chain,
+      })
+      .catch((error: unknown) => {
+        if (isStaleOrderError(error)) return undefined;
+        throw error;
+      });
+    if (!hash) return undefined;
+    const receipt = await this.ctx.publicClient.waitForTransactionReceipt({ hash });
+    if (receipt.status !== "success") {
+      throw new Error(
+        `cancel transaction reverted for order ${orderId}: ${hash}`,
+      );
+    }
     return hash;
   }
 }

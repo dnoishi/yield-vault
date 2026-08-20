@@ -23,11 +23,19 @@ export function Analytics() {
     analyticsError,
     metrics,
     marketData,
+    marketLoading,
+    marketError,
     period,
     totalSupply,
     strategyEarnings,
+    vaultRealized,
+    vaultUnrealized,
+    riskHandler,
+    totalAssets,
+    idle,
     address,
   } = useVaultDashboard();
+  const deployed = totalAssets > idle ? totalAssets - idle : 0n;
 
   return (
     <>
@@ -42,18 +50,28 @@ export function Analytics() {
 
       <section className="compact-stats stats-grid">
         <Stat
-          label={`${period === "all" ? "Total" : period} strategy earnings`}
+          label={`${period === "all" ? "Total" : period} yield captured (net P&L)`}
           value={strategyEarnings === undefined ? "Unavailable" : signedMoney(strategyEarnings)}
           tone={strategyEarnings === undefined ? "" : tone(strategyEarnings)}
         />
-        <Stat label="Open strategy orders" value={analytics?.strategy?.openOrders.toString() ?? "—"} />
-        <Stat label="Estimated yield score" value={(metrics?.estimatedYieldScore ?? 0).toFixed(2)} />
+        <Stat
+          label="Realized P&L"
+          value={signedMoney(vaultRealized)}
+          tone={tone(vaultRealized)}
+        />
+        <Stat
+          label="Unrealized P&L"
+          value={signedMoney(vaultUnrealized)}
+          tone={tone(vaultUnrealized)}
+        />
       </section>
 
       <section className="analytics-grid">
         <div className="glass data-panel">
           <SectionHeading eyebrow="DREAMDEX" title="Market telemetry" />
           <Metric label="Operator state" value={metrics?.status ?? "Unavailable"} />
+          <Metric label="Idle / deployed" value={`${money(idle)} / ${money(deployed)}`} />
+          <Metric label="Open orders" value={analytics?.strategy?.openOrders.toString() ?? "—"} />
           <Metric label="Score / second" value={(metrics?.scoreRate ?? 0).toFixed(4)} />
           <Metric
             label={`${dreamDexSymbol} mid`}
@@ -71,11 +89,39 @@ export function Analytics() {
             Score is proximity-weighted resting interest, not guaranteed APY.
             Market data is from DreamDEX; dollar NAV comes from the vault.
           </p>
+          <Metric
+            label="RiskHandler status"
+            value={
+              !riskHandler.configured
+                ? "Not configured"
+                : riskHandler.subscriptionId > 0n
+                  ? `Active · subscription #${riskHandler.subscriptionId}`
+                  : "Not subscribed"
+            }
+          />
+          <Metric label="Max spread" value={`${riskHandler.maxSpreadBps} bps`} />
+          <Metric label="Max move" value={`${riskHandler.maxMoveBps} bps`} />
+          <Metric
+            label="Observed spread / move"
+            value={
+              metrics?.marketSpreadBps === undefined
+                ? "—"
+                : `${metrics.marketSpreadBps.toFixed(2)} / ${(metrics.marketMoveBps ?? 0).toFixed(2)} bps`
+            }
+          />
+          <Metric
+            label="Session maxima"
+            value={`${(metrics?.observedMaxSpreadBps ?? 0).toFixed(2)} / ${(metrics?.observedMaxMoveBps ?? 0).toFixed(2)} bps`}
+          />
         </div>
 
         <div className="glass data-panel">
           <SectionHeading eyebrow="LATEST ACTIVITY" title="Recent DreamDEX fills" />
-          {marketData?.trades.length ? (
+          {marketLoading ? (
+            <p className="empty-state">Loading recent fills…</p>
+          ) : marketError || marketData?.tradesAvailable === false ? (
+            <p className="empty-state error">DreamDEX tape unavailable.</p>
+          ) : marketData?.trades?.length ? (
             <div className="trades">
               {marketData.trades.slice(0, 6).map((trade) => (
                 <div key={trade.id}>

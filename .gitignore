@@ -29,9 +29,6 @@ cache/
 /broadcast/**/dry-run/
 broadcast/
 
-# Docs
-docs/
-
 # Dotenv file
 .env
 
@@ -39,3 +36,6 @@ docs/
 lib
 .vercel
 .env*
+!.env.example
+!operator/.env.shannon.example
+!apps/web/.env.local.example

@@ -5,6 +5,10 @@
   "outputDirectory": "apps/web/dist",
   "rewrites": [
     {
+      "source": "/api/dreamdex/:path*",
+      "destination": "https://stg.api.dreamdex.io/v0/:path*"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

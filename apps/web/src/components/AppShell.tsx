@@ -7,7 +7,7 @@ import { Icon } from "./ui";
 const navItems = [
   { to: "/", label: "Home", icon: "home" as const },
   { to: "/vault", label: "Vault", icon: "vault" as const },
-  { to: "/swap", label: "Swap", icon: "swap" as const },
+  { to: "/swap", label: "Mint", icon: "swap" as const },
   { to: "/analytics", label: "Analytics", icon: "analytics" as const },
   { to: "/safety", label: "Safety", icon: "safety" as const },
 ];

@@ -4,6 +4,10 @@
 import { parseAbi } from "viem";
 
 export const SPOT_POOL_ABI = parseAbi([
+  "error IncorrectOrder()",
+  "error PostOnlyWouldCross()",
+  "error InsufficientBalance(uint256 available,uint256 required)",
+  "error IncorrectSender(address sender,address expected)",
   "function getPoolParams() view returns (address baseToken,address quoteToken,uint256 makerFee,uint256 takerFee,uint256 tickSize,uint256 minQuantity,uint256 lotSize)",
   "function getBookLevels(bool isBid,uint64 numLevels) view returns ((uint256 price,uint256 quantity)[])",
   "function getWithdrawableBalance(address owner,address token) view returns (uint256)",

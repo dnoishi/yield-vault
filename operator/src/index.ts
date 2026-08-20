@@ -1,6 +1,6 @@
 import "./env.js";
 import { createServer } from "node:http";
-import { parseAbi, type Address } from "viem";
+import { parseAbi, zeroAddress, type Address } from "viem";
 import { AnalyticsDb } from "./analytics/db.js";
 import {
   defaultIndexerConfig,
@@ -12,10 +12,34 @@ import type { AnalyticsPeriod } from "./analytics/types.js";
 import { createChainContext } from "./dreamdex/client.js";
 import { Pool } from "./dreamdex/pool.js";
 import { DreamDexWs } from "./dreamdex/ws.js";
+import {
+  runOperatorTick,
+  type RuntimeDiagnostics,
+} from "./runtime.js";
 import { loadStrategyConfig } from "./strategy/config.js";
 import { YieldOptimizer } from "./strategy/yieldOptimizer.js";
+import { keeperPrivateKey, WithdrawalKeeper } from "./keeper.js";
+import {
+  deriveWatchdogStatus,
+  markWatchdogRuntimeFailure,
+  QueueStallTracker,
+  type WatchdogStatus,
+} from "./watchdog.js";
 
-const PAUSE_ABI = parseAbi(["function paused() view returns (bool)"]);
+const VAULT_STATE_ABI = parseAbi([
+  "function paused() view returns (bool)",
+  "function queuedLiabilities() view returns (uint256)",
+]);
+const RISK_ABI = parseAbi([
+  "function subscriptionId() view returns (uint256)",
+]);
+
+interface RuntimeState extends RuntimeDiagnostics {
+  paused: boolean;
+  queuedLiabilities: bigint;
+  riskSubscriptionId: bigint;
+  watchdog: WatchdogStatus;
+}
 
 async function main(): Promise<void> {
   const context = createChainContext();
@@ -40,16 +64,104 @@ async function main(): Promise<void> {
     (message) => console.log(`[${new Date().toISOString()}] ${message}`),
   );
   await analytics.start();
-  let paused = await isPaused(context, vault);
+  const riskHandler = (process.env.RISK_HANDLER_ADDRESS ??
+    (context.net.name === "testnet"
+      ? "0x7655a76b44aF4aFc6F6A3c653d33214E4735F676"
+      : zeroAddress)) as Address;
+  const riskConfigured = riskHandler !== zeroAddress;
+  const keeperKey = keeperPrivateKey();
+  const keeper = keeperKey
+    ? new WithdrawalKeeper(
+        context.publicClient,
+        context.net,
+        vault,
+        keeperKey,
+        BigInt(process.env.KEEPER_MAX_REQUESTS ?? 10),
+        (message) => console.log(`[${new Date().toISOString()}] ${message}`),
+      )
+    : undefined;
+  const stallTracker = new QueueStallTracker(
+    Number(process.env.QUEUE_STALL_THRESHOLD_MS ?? 120_000),
+  );
+  const initialVaultState = await readVaultState(context, vault);
+  const initialRiskSubscriptionId = await readRiskSubscription(
+    context,
+    riskHandler,
+    riskConfigured,
+  );
+  let runtime: RuntimeState = {
+    ...initialVaultState,
+    riskSubscriptionId: initialRiskSubscriptionId,
+    consecutiveTickFailures: 0,
+    watchdog: deriveWatchdogStatus({
+      paused: initialVaultState.paused,
+      killed: false,
+      operatorStatus: "starting",
+      hasExposure: false,
+      analyticsStale: false,
+      queuedLiabilities: initialVaultState.queuedLiabilities,
+      queueStalled: false,
+      riskConfigured,
+      riskSubscriptionId: initialRiskSubscriptionId,
+      keeperConfigured: keeper !== undefined,
+    }),
+  };
   let ticking = false;
 
   const tick = async (lastWsAt: number) => {
     if (ticking) return;
     ticking = true;
     try {
-      paused = await isPaused(context, vault);
-      if (paused) await optimizer.cancelAll();
-      else await optimizer.onBook(lastWsAt);
+      let nextRuntime: RuntimeState | undefined;
+      const result = await runOperatorTick(
+        async () => {
+          const vaultState = await readVaultState(context, vault);
+          if (vaultState.paused) await optimizer.cancelAll();
+          else await optimizer.onBook(lastWsAt);
+          await keeper?.tick();
+          const [strategy, riskSubscriptionId] = await Promise.all([
+            strategyStatus(pool, optimizer.metrics(), vaultState.paused),
+            readRiskSubscription(context, riskHandler, riskConfigured),
+          ]);
+          const analyticsStale =
+            Date.now() - (analyticsDb.lastSnapshotAt() ?? 0) >
+            indexerConfig.snapshotIntervalMs * 3;
+          nextRuntime = {
+            ...vaultState,
+            riskSubscriptionId,
+            consecutiveTickFailures: 0,
+            watchdog: deriveWatchdogStatus({
+              paused: vaultState.paused,
+              killed: optimizer.metrics().killed,
+              operatorStatus: optimizer.metrics().status,
+              hasExposure:
+                strategy.openOrders > 0 ||
+                strategy.vaultBase > 0 ||
+                strategy.vaultQuote > 0,
+              analyticsStale,
+              queuedLiabilities: vaultState.queuedLiabilities,
+              queueStalled: stallTracker.update(vaultState.queuedLiabilities),
+              riskConfigured,
+              riskSubscriptionId,
+              keeperConfigured: keeper !== undefined,
+            }),
+          };
+        },
+        runtime,
+        (message) => console.log(`[${new Date().toISOString()}] ${message}`),
+      );
+      if (result.ok) {
+        runtime = { ...(nextRuntime ?? runtime), ...result.diagnostics };
+      } else {
+        runtime = {
+          ...runtime,
+          ...result.diagnostics,
+          watchdog: markWatchdogRuntimeFailure(
+            runtime.watchdog,
+            result.diagnostics.lastTickError ?? "unknown error",
+          ),
+        };
+      }
     } finally {
       ticking = false;
     }
@@ -76,7 +188,18 @@ async function main(): Promise<void> {
     response.setHeader("Content-Type", "application/json");
     const url = new URL(request.url ?? "/", "http://localhost");
     if (url.pathname === "/health") {
-      response.end(JSON.stringify({ ok: true, paused }));
+      response.statusCode = runtime.watchdog.ok ? 200 : 503;
+      response.end(
+        JSON.stringify({
+          ...runtime.watchdog,
+          paused: runtime.paused,
+          queuedLiabilities: runtime.queuedLiabilities.toString(),
+          riskSubscriptionId: runtime.riskSubscriptionId.toString(),
+          lastSuccessfulTickAt: runtime.lastSuccessfulTickAt,
+          consecutiveTickFailures: runtime.consecutiveTickFailures,
+          lastTickError: runtime.lastTickError,
+        }),
+      );
       return;
     }
     if (url.pathname === "/metrics") {
@@ -87,14 +210,20 @@ async function main(): Promise<void> {
           pool: pool.address,
           symbol: pool.symbol,
           chainId: context.net.chainId,
-          vaultPaused: paused,
+          vaultPaused: runtime.paused,
+          queuedLiabilities: runtime.queuedLiabilities.toString(),
+          riskSubscriptionId: runtime.riskSubscriptionId.toString(),
+          lastSuccessfulTickAt: runtime.lastSuccessfulTickAt,
+          consecutiveTickFailures: runtime.consecutiveTickFailures,
+          lastTickError: runtime.lastTickError,
+          watchdog: runtime.watchdog,
         }),
       );
       return;
     }
     if (url.pathname === "/analytics") {
       const period = parsePeriod(url.searchParams.get("period"));
-      void strategyStatus(pool, optimizer.metrics(), paused)
+      void strategyStatus(pool, optimizer.metrics(), runtime.paused)
         .then((strategy) => {
           const report = analytics.getReport(period, strategy);
           if (
@@ -163,15 +292,40 @@ function parsePeriod(value: string | null): AnalyticsPeriod {
   return value === "24h" || value === "7d" || value === "30d" ? value : "all";
 }
 
-async function isPaused(
+async function readVaultState(
   context: ReturnType<typeof createChainContext>,
   vault: Address,
-): Promise<boolean> {
-  return context.publicClient.readContract({
-    address: vault,
-    abi: PAUSE_ABI,
-    functionName: "paused",
-  });
+): Promise<{ paused: boolean; queuedLiabilities: bigint }> {
+  const [paused, queuedLiabilities] = await Promise.all([
+    context.publicClient.readContract({
+      address: vault,
+      abi: VAULT_STATE_ABI,
+      functionName: "paused",
+    }),
+    context.publicClient.readContract({
+      address: vault,
+      abi: VAULT_STATE_ABI,
+      functionName: "queuedLiabilities",
+    }),
+  ]);
+  return { paused, queuedLiabilities };
+}
+
+async function readRiskSubscription(
+  context: ReturnType<typeof createChainContext>,
+  riskHandler: Address,
+  configured: boolean,
+): Promise<bigint> {
+  if (!configured) return 0n;
+  try {
+    return await context.publicClient.readContract({
+      address: riskHandler,
+      abi: RISK_ABI,
+      functionName: "subscriptionId",
+    });
+  } catch {
+    return 0n;
+  }
 }
 
 main().catch((error) => {

@@ -16,6 +16,8 @@ export const vaultAbi = parseAbi([
   "function queuedLiabilities() view returns (uint256)",
   "function availableIdle() view returns (uint256)",
   "function nextRequestToProcess() view returns (uint256)",
+  "function nextRequestId() view returns (uint256)",
+  "function withdrawalRequests(uint256) view returns (address receiver, uint256 assets, uint64 requestedAt, bool processed)",
   "function lastHaltReason() view returns (bytes32)",
   "function deposit(uint256 assets,address receiver) returns (uint256 shares)",
   "function mint(uint256 shares,address receiver) returns (uint256 assets)",
@@ -28,4 +30,16 @@ export const erc20Abi = parseAbi([
   "function approve(address spender,uint256 amount) returns (bool)",
   "function balanceOf(address) view returns (uint256)",
   "function symbol() view returns (string)",
+]);
+
+export const usdsoMintAbi = parseAbi([
+  "function mint(address to,uint256 amount)",
+  "function balanceOf(address) view returns (uint256)",
+]);
+
+export const riskHandlerAbi = parseAbi([
+  "function subscriptionId() view returns (uint256)",
+  "function maxSpreadBps() view returns (uint16)",
+  "function maxMoveBps() view returns (uint16)",
+  "function lastMid() view returns (uint256)",
 ]);

@@ -46,8 +46,6 @@ interface OrderBookResponse {
 interface TickerResponse {
   symbols: Array<{
     close: string;
-    high: string;
-    low: string;
     open: string;
     volume: string;
     lastTradeAt: number | null;
@@ -69,7 +67,7 @@ export interface DreamDexTrade {
 }
 
 interface TradesResponse {
-  trades: DreamDexTrade[];
+  trades?: DreamDexTrade[];
 }
 
 export interface DreamDexMarketData {
@@ -83,6 +81,7 @@ export interface DreamDexMarketData {
   volume24hBase: number;
   quoteVolume: number;
   lastTradeAt: number | null;
+  tradesAvailable?: boolean;
   trades: DreamDexTrade[];
   updatedAt: number;
 }
@@ -124,7 +123,7 @@ export async function loadDreamDexMarketData(
   symbol: string,
 ): Promise<DreamDexMarketData> {
   const encodedSymbol = encodeURIComponent(symbol);
-  const [markets, books, tickers, volume, trades] = await Promise.all([
+  const results = await Promise.allSettled([
     getJson<MarketResponse>(`${baseUrl}/markets`),
     getJson<OrderBookResponse>(
       `${baseUrl}/orderbooks?symbols=${encodedSymbol}&depth=1`,
@@ -135,22 +134,28 @@ export async function loadDreamDexMarketData(
       `${baseUrl}/markets/${encodedSymbol}/trades?limit=10`,
     ),
   ]);
-
-  const market = markets.markets.find((candidate) => candidate.symbol === symbol);
-  const book = books.orderbooks[0];
-  const ticker = tickers.symbols[0];
-  if (!market || !book || !ticker) {
-    throw new Error(`DreamDEX returned no data for ${symbol}`);
+  if (results.every((result) => result.status === "rejected")) {
+    throw new Error("DreamDEX market data is unavailable");
   }
 
-  const bestBid = numeric(book.bids[0]?.price);
-  const bestAsk = numeric(book.asks[0]?.price);
-  const open = numeric(ticker.open) ?? 0;
-  const close = numeric(ticker.close) ?? 0;
+  const markets = fulfilled(results[0]);
+  const books = fulfilled(results[1]);
+  const tickers = fulfilled(results[2]);
+  const volume = fulfilled(results[3]);
+  const tradeResponse = fulfilled(results[4]);
+  const market = markets?.markets.find((candidate) => candidate.symbol === symbol);
+  const book = books?.orderbooks[0];
+  const ticker = tickers?.symbols[0];
+  const bestBid = numeric(book?.bids[0]?.price);
+  const bestAsk = numeric(book?.asks[0]?.price);
+  const open = numeric(ticker?.open) ?? 0;
+  const close = numeric(ticker?.close) ?? 0;
 
   return {
     symbol,
-    pool: market.contract,
+    pool:
+      market?.contract ??
+      "0x0000000000000000000000000000000000000000",
     ...(bestBid !== undefined ? { bestBid } : {}),
     ...(bestAsk !== undefined ? { bestAsk } : {}),
     ...(bestBid !== undefined && bestAsk !== undefined
@@ -158,11 +163,13 @@ export async function loadDreamDexMarketData(
       : {}),
     close24h: close,
     ...(open > 0 ? { change24hPercent: ((close - open) / open) * 100 } : {}),
-    volume24hBase: numeric(ticker.volume) ?? 0,
-    quoteVolume: numeric(volume.quoteVolume) ?? 0,
-    lastTradeAt: ticker.lastTradeAt,
-    trades: trades.trades,
-    updatedAt: Math.max(book.timestamp, volume.until),
+    volume24hBase: numeric(ticker?.volume) ?? 0,
+    quoteVolume: numeric(volume?.quoteVolume) ?? 0,
+    lastTradeAt: ticker?.lastTradeAt ?? null,
+    tradesAvailable: results[4]?.status === "fulfilled",
+    trades: Array.isArray(tradeResponse?.trades) ? tradeResponse.trades : [],
+    updatedAt:
+      Math.max(book?.timestamp ?? 0, volume?.until ?? 0) || Date.now(),
   };
 }
 
@@ -254,6 +261,12 @@ async function requestJson<T>(
     );
   }
   return response.json() as Promise<T>;
+}
+
+function fulfilled<T>(
+  result: PromiseSettledResult<T> | undefined,
+): T | undefined {
+  return result?.status === "fulfilled" ? result.value : undefined;
 }
 
 function numeric(value: string | undefined): number | undefined {

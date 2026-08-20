@@ -54,20 +54,18 @@ export const targetChain =
       : shannon;
 export const vaultAddress = (import.meta.env.VITE_VAULT_ADDRESS ??
   "0x0000000000000000000000000000000000000000") as Address;
+export const riskHandlerAddress = (import.meta.env.VITE_RISK_HANDLER_ADDRESS ??
+  (configuredChainId === shannon.id
+    ? "0x7655a76b44aF4aFc6F6A3c653d33214E4735F676"
+    : "0x0000000000000000000000000000000000000000")) as Address;
 export const metricsUrl =
   import.meta.env.VITE_OPERATOR_METRICS_URL ?? "http://localhost:8787/metrics";
 export const analyticsUrl =
   import.meta.env.VITE_OPERATOR_ANALYTICS_URL ?? "http://localhost:8787/analytics";
 export const dreamDexApiUrl =
-  import.meta.env.VITE_DREAMDEX_API_URL ??
-  (configuredChainId === somnia.id
-    ? "https://api.dreamdex.io/v0"
-    : configuredChainId === shannon.id
-      ? "https://stg.api.dreamdex.io/v0"
-      : undefined);
+  import.meta.env.VITE_DREAMDEX_API_URL ?? "https://stg.api.dreamdex.io/v0";
 export const dreamDexSymbol =
   import.meta.env.VITE_DREAMDEX_SYMBOL ?? "WETH:USDso";
-export const dreamDexSwapSymbol = "SOMI:USDso";
 export const vaultDeployBlock = envBigInt(
   import.meta.env.VITE_VAULT_DEPLOY_BLOCK,
 );

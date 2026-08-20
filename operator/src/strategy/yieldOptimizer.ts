@@ -7,6 +7,7 @@ import { formatEther } from "viem";
 import type { ChainContext } from "../dreamdex/client.js";
 import { ORDER_TYPE } from "../dreamdex/abi.js";
 import { Pool } from "../dreamdex/pool.js";
+import { isTransientDreamDexError } from "../dreamdex/errors.js";
 import { bpsDistance, fromRaw, toRaw } from "../dreamdex/quant.js";
 import {
   proximityWeight,
@@ -32,6 +33,10 @@ export interface OptimizerMetrics {
   vaultBase: number;
   vaultQuote: number;
   lastMid?: number;
+  marketSpreadBps?: number;
+  marketMoveBps?: number;
+  observedMaxSpreadBps: number;
+  observedMaxMoveBps: number;
   gasTransactions: number;
   placeFailures: number;
   updatedAt: string;
@@ -48,6 +53,11 @@ export class YieldOptimizer {
   private lastAccrual = Date.now();
   private lastQuoteAt = 0;
   private lastQuoteMid?: number;
+  private lastRiskMid?: number;
+  private marketSpreadBps?: number;
+  private marketMoveBps?: number;
+  private observedMaxSpreadBps = 0;
+  private observedMaxMoveBps = 0;
   private running = false;
   private gasTransactions = 0;
   private placeFailures = 0;
@@ -77,6 +87,10 @@ export class YieldOptimizer {
       }
       await this.requote();
     } catch (error) {
+      if (isTransientDreamDexError(error)) {
+        this.log(`transient DreamDEX race: ${(error as Error).message}`);
+        return;
+      }
       this.placeFailures += 1;
       this.log(`optimizer error: ${(error as Error).message}`);
       if (this.placeFailures >= 5) await this.tripKill("five consecutive strategy failures");
@@ -92,23 +106,44 @@ export class YieldOptimizer {
     return value;
   }
 
-  async cancelAll(): Promise<void> {
+  async cancelAll(): Promise<boolean> {
     if (this.config.dryRun) {
       this.bid = undefined;
       this.ask = undefined;
-      return;
+      return true;
     }
-    const ids = await this.pool.openOrderIds();
+    let ids: bigint[];
+    try {
+      ids = await this.pool.openOrderIds();
+    } catch (error) {
+      this.log(`open-order reconciliation failed: ${(error as Error).message}`);
+      return false;
+    }
+    let cancellationFailures = 0;
     for (const id of ids) {
       try {
-        await this.pool.cancel(id);
-        this.gasTransactions += 1;
+        const hash = await this.pool.cancel(id);
+        if (hash) this.gasTransactions += 1;
       } catch (error) {
+        cancellationFailures += 1;
         this.log(`cancel ${id} failed: ${(error as Error).message}`);
       }
     }
+    try {
+      const remaining = await this.pool.activeOrderIds();
+      if (remaining.length > 0) {
+        this.log(
+          `cancel reconciliation blocked: ${remaining.length} active orders remain after ${cancellationFailures} cancellation failures`,
+        );
+        return false;
+      }
+    } catch (error) {
+      this.log(`cancel reconciliation failed: ${(error as Error).message}`);
+      return false;
+    }
     this.bid = undefined;
     this.ask = undefined;
+    return true;
   }
 
   metrics(): OptimizerMetrics {
@@ -128,6 +163,14 @@ export class YieldOptimizer {
       vaultBase: this.inventory.base,
       vaultQuote: this.inventory.quote,
       ...(this.lastQuoteMid !== undefined ? { lastMid: this.lastQuoteMid } : {}),
+      ...(this.marketSpreadBps !== undefined
+        ? { marketSpreadBps: this.marketSpreadBps }
+        : {}),
+      ...(this.marketMoveBps !== undefined
+        ? { marketMoveBps: this.marketMoveBps }
+        : {}),
+      observedMaxSpreadBps: this.observedMaxSpreadBps,
+      observedMaxMoveBps: this.observedMaxMoveBps,
       gasTransactions: this.gasTransactions,
       placeFailures: this.placeFailures,
       updatedAt: new Date().toISOString(),
@@ -147,6 +190,22 @@ export class YieldOptimizer {
       await this.cancelAll();
       return;
     }
+    const risk = calculateRiskTelemetry(
+      book.bestBid,
+      book.bestAsk,
+      this.lastRiskMid,
+    );
+    this.marketSpreadBps = risk.spreadBps;
+    this.marketMoveBps = risk.moveBps;
+    this.observedMaxSpreadBps = Math.max(
+      this.observedMaxSpreadBps,
+      risk.spreadBps,
+    );
+    this.observedMaxMoveBps = Math.max(
+      this.observedMaxMoveBps,
+      risk.moveBps,
+    );
+    this.lastRiskMid = risk.mid;
     this.accrueScore();
     this.pushMid(book.mid);
     if (bpsDistance(book.bestBid, book.bestAsk) > this.config.maxBookSpreadBps) return;
@@ -205,18 +264,35 @@ export class YieldOptimizer {
 
     const bidPrice = fromRaw(bidRaw, this.pool.quoteDecimals);
     const askPrice = fromRaw(askRaw, this.pool.quoteDecimals);
+    if (!(await this.cancelAll())) {
+      throw new Error("unable to clear active orders before requoting");
+    }
+    const [availableBase, availableQuote] = await Promise.all([
+      this.pool.vaultBase(),
+      this.pool.vaultQuote(),
+    ]);
+    const availableInventoryUsdso = availableBase * book.mid;
+    this.inventory = {
+      base: availableBase,
+      quote: availableQuote,
+      usdso: availableInventoryUsdso,
+    };
     const capacity = Math.max(
       0,
-      1 - inventory / Math.max(this.config.maxInventoryUsdso, 1),
+      1 -
+        availableInventoryUsdso /
+          Math.max(this.config.maxInventoryUsdso, 1),
     );
-    const bidNotional = Math.min(this.config.notionalUsdso * capacity, this.inventory.quote);
+    const bidNotional = Math.min(
+      this.config.notionalUsdso * capacity,
+      availableQuote,
+    );
     const bidQuantity = bidPrice > 0 ? bidNotional / bidPrice : 0;
     const askQuantity = Math.min(
       this.config.notionalUsdso / askPrice,
-      this.inventory.base,
+      availableBase,
     );
 
-    await this.cancelAll();
     const newBid = await this.placeLeg(true, bidPrice, bidQuantity, book.midRaw, sigma);
     const newAsk = await this.placeLeg(false, askPrice, askQuantity, book.midRaw, sigma);
     this.bid = newBid;
@@ -241,13 +317,24 @@ export class YieldOptimizer {
       this.log(`dry-run ${isBid ? "bid" : "ask"} ${quantity} @ ${price}`);
       return { price, quantity, weight };
     }
-    const result = await this.pool.place({
-      isBid,
-      price,
-      quantity,
-      orderType: ORDER_TYPE.PostOnly,
-      expireMs: this.config.expireMs,
-    });
+    const result = await this.pool
+      .place({
+        isBid,
+        price,
+        quantity,
+        orderType: ORDER_TYPE.PostOnly,
+        expireMs: this.config.expireMs,
+      })
+      .catch((error: unknown) => {
+        if (isTransientDreamDexError(error)) {
+          this.log(
+            `skipped post-only ${isBid ? "bid" : "ask"} after book moved`,
+          );
+          return undefined;
+        }
+        throw error;
+      });
+    if (!result) return undefined;
     this.gasTransactions += 1;
     return { orderId: result.orderId, price, quantity, weight };
   }
@@ -293,4 +380,21 @@ export class YieldOptimizer {
     this.log(`KILL SWITCH: ${reason}`);
     await this.cancelAll();
   }
+}
+
+export function calculateRiskTelemetry(
+  bestBid: number,
+  bestAsk: number,
+  previousMid?: number,
+): { mid: number; spreadBps: number; moveBps: number } {
+  const mid = (bestBid + bestAsk) / 2;
+  if (mid <= 0 || bestAsk <= bestBid) {
+    return { mid, spreadBps: 10_000, moveBps: 10_000 };
+  }
+  const spreadBps = ((bestAsk - bestBid) * 10_000) / mid;
+  const moveBps =
+    previousMid === undefined || previousMid <= 0
+      ? 0
+      : (Math.abs(mid - previousMid) * 10_000) / previousMid;
+  return { mid, spreadBps, moveBps };
 }

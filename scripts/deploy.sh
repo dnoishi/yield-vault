@@ -110,6 +110,7 @@ VAULT_ADDRESS="$(json_value "$SHANNON_DEPLOYMENT" vault)"
 VAULT_DEPLOY_BLOCK="$(json_value "$SHANNON_DEPLOYMENT" deployBlock)"
 POOL_ADDRESS="$(json_value "$SHANNON_DEPLOYMENT" pool)"
 OPERATOR_REGISTRY="$(json_value "$SHANNON_DEPLOYMENT" operatorRegistry)"
+RISK_HANDLER_ADDRESS="$(json_value "$SHANNON_DEPLOYMENT" riskHandler)"
 
 echo "Preparing Railway operator..."
 if ! railway link --project "$RAILWAY_PROJECT_NAME" --json >/dev/null 2>&1; then
@@ -129,6 +130,7 @@ set_railway_variable PRIVATE_KEY "$PRIVATE_KEY"
 set_railway_variable OWNER_ADDRESS "$VAULT_ADDRESS"
 set_railway_variable POOL_ADDRESS "$POOL_ADDRESS"
 set_railway_variable OPERATOR_REGISTRY "$OPERATOR_REGISTRY"
+set_railway_variable RISK_HANDLER_ADDRESS "$RISK_HANDLER_ADDRESS"
 set_railway_variable VAULT_DEPLOY_BLOCK "$VAULT_DEPLOY_BLOCK"
 set_railway_variable ANALYTICS_DB_PATH "/data/analytics.sqlite"
 
@@ -137,6 +139,9 @@ OPERATOR_VARIABLES=(
   ANALYTICS_POLL_INTERVAL_MS
   ANALYTICS_BLOCK_CHUNK
   ANALYTICS_CONFIRMATIONS
+  KEEPER_PRIVATE_KEY
+  KEEPER_MAX_REQUESTS
+  QUEUE_STALL_THRESHOLD_MS
   YO_SYMBOL
   YO_SIGMA_TICKS
   YO_MIN_WEIGHT
@@ -188,6 +193,7 @@ upsert_vercel_variable VITE_CHAIN_ID "50312"
 upsert_vercel_variable VITE_RPC_URL "https://api.infra.testnet.somnia.network/"
 upsert_vercel_variable VITE_VAULT_ADDRESS "$VAULT_ADDRESS"
 upsert_vercel_variable VITE_VAULT_DEPLOY_BLOCK "$VAULT_DEPLOY_BLOCK"
+upsert_vercel_variable VITE_RISK_HANDLER_ADDRESS "$RISK_HANDLER_ADDRESS"
 upsert_vercel_variable VITE_DREAMDEX_API_URL "https://stg.api.dreamdex.io/v0"
 upsert_vercel_variable VITE_DREAMDEX_SYMBOL "WETH:USDso"
 upsert_vercel_variable VITE_OPERATOR_METRICS_URL "$RAILWAY_URL/metrics"

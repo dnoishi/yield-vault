@@ -28,13 +28,14 @@ import {
   useSwitchChain,
   useWriteContract,
 } from "wagmi";
-import { erc20Abi, vaultAbi } from "../abi";
+import { erc20Abi, riskHandlerAbi, vaultAbi } from "../abi";
 import {
   analyticsUrl,
   configuredChainId,
   dreamDexApiUrl,
   dreamDexSymbol,
   metricsUrl,
+  riskHandlerAddress,
   targetChain,
   vaultAddress,
 } from "../config";
@@ -57,10 +58,39 @@ export interface OperatorMetrics {
   vaultQuote?: number;
   lastMid?: number;
   vaultPaused?: boolean;
+  marketSpreadBps?: number;
+  marketMoveBps?: number;
+  observedMaxSpreadBps?: number;
+  observedMaxMoveBps?: number;
+  watchdog?: {
+    ok: boolean;
+    level: "healthy" | "degraded" | "unhealthy";
+    reasons: string[];
+    checks: {
+      operator: string;
+      analytics: string;
+      withdrawals: string;
+      riskHandler: string;
+      keeper: string;
+      vault: string;
+    };
+  };
   updatedAt?: string;
 }
 
 const ZERO_HASH = `0x${"0".repeat(64)}` as Hash;
+const MAX_QUEUE_SCAN = 128n;
+
+export const QUEUE_STATUS_TITLE = "Queued — processing as liquidity frees";
+export const QUEUE_SUCCESS_MESSAGE =
+  "Withdrawal queued. Your shares were burned. Funds pay out as liquidity frees.";
+
+export interface PendingWithdrawal {
+  requestId: bigint;
+  assets: bigint;
+  requestedAt: bigint;
+  queuePosition: number;
+}
 
 function useDashboardState() {
   const { address, isConnected } = useAccount();
@@ -82,6 +112,8 @@ function useDashboardState() {
   const [busy, setBusy] = useState(false);
   const [metrics, setMetrics] = useState<OperatorMetrics>();
   const [marketData, setMarketData] = useState<DreamDexMarketData>();
+  const [marketLoading, setMarketLoading] = useState(true);
+  const [marketError, setMarketError] = useState(false);
   const [period, setPeriod] = useState<AnalyticsPeriod>("all");
   const [analytics, setAnalytics] = useState<AnalyticsReport>();
   const [analyticsError, setAnalyticsError] = useState(false);
@@ -99,6 +131,7 @@ function useDashboardState() {
     "availableIdle",
     "nextRequestToProcess",
     "lastHaltReason",
+    "nextRequestId",
   ] as const;
   const { data, refetch } = useReadContracts({
     contracts: calls.map((functionName) => ({
@@ -127,6 +160,46 @@ function useDashboardState() {
   const idle = (data?.[9]?.result as bigint | undefined) ?? 0n;
   const queueHead = (data?.[10]?.result as bigint | undefined) ?? 0n;
   const haltReason = (data?.[11]?.result as Hash | undefined) ?? ZERO_HASH;
+  const nextRequestId = (data?.[12]?.result as bigint | undefined) ?? 0n;
+
+  const pendingRequestIds = useMemo(() => {
+    if (nextRequestId <= queueHead) return [];
+    const end =
+      nextRequestId > queueHead + MAX_QUEUE_SCAN
+        ? queueHead + MAX_QUEUE_SCAN
+        : nextRequestId;
+    const ids: bigint[] = [];
+    for (let id = queueHead; id < end; id++) ids.push(id);
+    return ids;
+  }, [queueHead, nextRequestId]);
+
+  const { data: requestData, refetch: refetchRequests } = useReadContracts({
+    contracts: pendingRequestIds.map((requestId) => ({
+      address: vaultAddress,
+      abi: vaultAbi,
+      functionName: "withdrawalRequests" as const,
+      args: [requestId] as const,
+      chainId: configuredChainId,
+    })),
+    query: { enabled: pendingRequestIds.length > 0, refetchInterval: 8_000 },
+  });
+
+  const pendingWithdrawals = useMemo(
+    () =>
+      ownerPendingWithdrawals(
+        account,
+        queueHead,
+        pendingRequestIds.map((requestId, index) => ({
+          requestId,
+          result: requestData?.[index]?.result,
+        })),
+      ),
+    [account, queueHead, pendingRequestIds, requestData],
+  );
+  const pendingClaimAssets = pendingWithdrawals.reduce(
+    (sum, request) => sum + request.assets,
+    0n,
+  );
 
   const depositRaw = useMemo(() => safeParse(depositInput), [depositInput]);
   const redeemRaw = useMemo(() => safeParse(redeemInput), [redeemInput]);
@@ -173,6 +246,39 @@ function useDashboardState() {
     chainId: configuredChainId,
     query: { enabled: asset !== zeroAddress && isConnected },
   });
+  const { data: assetBalance = 0n } = useReadContract({
+    address: asset,
+    abi: erc20Abi,
+    functionName: "balanceOf",
+    args: [account],
+    chainId: configuredChainId,
+    query: { enabled: asset !== zeroAddress && isConnected },
+  });
+  const riskCalls = [
+    "subscriptionId",
+    "maxSpreadBps",
+    "maxMoveBps",
+    "lastMid",
+  ] as const;
+  const { data: riskData } = useReadContracts({
+    contracts: riskCalls.map((functionName) => ({
+      address: riskHandlerAddress,
+      abi: riskHandlerAbi,
+      functionName,
+      chainId: configuredChainId,
+    })),
+    query: {
+      enabled: riskHandlerAddress !== zeroAddress,
+      refetchInterval: 8_000,
+    },
+  });
+  const riskHandler = {
+    configured: riskHandlerAddress !== zeroAddress,
+    subscriptionId: (riskData?.[0]?.result as bigint | undefined) ?? 0n,
+    maxSpreadBps: Number(riskData?.[1]?.result ?? 0),
+    maxMoveBps: Number(riskData?.[2]?.result ?? 0),
+    lastMid: (riskData?.[3]?.result as bigint | undefined) ?? 0n,
+  };
 
   useEffect(() => {
     const load = () =>
@@ -186,14 +292,17 @@ function useDashboardState() {
   }, []);
 
   useEffect(() => {
-    if (!dreamDexApiUrl) {
-      setMarketData(undefined);
-      return;
-    }
     const load = () =>
       loadDreamDexMarketData(dreamDexApiUrl, dreamDexSymbol)
-        .then(setMarketData)
-        .catch(() => setMarketData(undefined));
+        .then((value) => {
+          setMarketData(value);
+          setMarketError(false);
+        })
+        .catch(() => {
+          setMarketData(undefined);
+          setMarketError(true);
+        })
+        .finally(() => setMarketLoading(false));
     void load();
     const interval = setInterval(load, 8_000);
     return () => clearInterval(interval);
@@ -230,6 +339,22 @@ function useDashboardState() {
     connectedOwner?.periodEarnings !== undefined
       ? BigInt(connectedOwner.periodEarnings)
       : undefined;
+  const ownerRealized = connectedOwner
+    ? BigInt(connectedOwner.realizedEarnings)
+    : 0n;
+  const ownerUnrealized = connectedOwner
+    ? BigInt(connectedOwner.unrealizedEarnings)
+    : 0n;
+  const vaultRealized =
+    analytics?.owners.reduce(
+      (sum, owner) => sum + BigInt(owner.realizedEarnings),
+      0n,
+    ) ?? 0n;
+  const vaultUnrealized =
+    analytics?.owners.reduce(
+      (sum, owner) => sum + BigInt(owner.unrealizedEarnings),
+      0n,
+    ) ?? 0n;
   const sharePrice =
     totalSupply > 0n ? Number(totalAssets) / Number(totalSupply) : 1;
   const ownerPercent = percentage(shareBalance, totalSupply);
@@ -245,8 +370,18 @@ function useDashboardState() {
   const supportsAtomicBatch =
     atomicStatus === "supported" || atomicStatus === "ready";
 
+  const indexedPendingClaims =
+    connectedOwner?.pendingClaims !== undefined
+      ? BigInt(connectedOwner.pendingClaims)
+      : 0n;
+  const claimAssets =
+    pendingClaimAssets > 0n ? pendingClaimAssets : indexedPendingClaims;
+  const hasPendingWithdrawals = claimAssets > 0n;
+  const queueLength =
+    nextRequestId > queueHead ? Number(nextRequestId - queueHead) : 0;
+
   async function refreshState() {
-    await Promise.all([refetch(), refetchAllowance()]);
+    await Promise.all([refetch(), refetchAllowance(), refetchRequests()]);
   }
 
   async function send(action: () => Promise<Hash>, success: string) {
@@ -348,9 +483,7 @@ function useDashboardState() {
             : [redeemRaw, account],
           chainId: configuredChainId,
         }),
-      canInstantRedeem
-        ? "Redemption complete."
-        : "Withdrawal queued. Shares were burned at the current NAV.",
+      canInstantRedeem ? "Redemption complete." : QUEUE_SUCCESS_MESSAGE,
     );
   }
 
@@ -372,12 +505,15 @@ function useDashboardState() {
     busy,
     metrics,
     marketData,
+    marketLoading,
+    marketError,
     period,
     setPeriod,
     analytics,
     analyticsError,
     totalAssets,
     totalSupply,
+    assetBalance,
     shareBalance,
     maxDeposit,
     paused,
@@ -385,6 +521,11 @@ function useDashboardState() {
     queued,
     idle,
     queueHead,
+    nextRequestId,
+    queueLength,
+    pendingWithdrawals,
+    pendingClaimAssets: claimAssets,
+    hasPendingWithdrawals,
     haltReason,
     requiredAssets,
     sharesReceived,
@@ -394,6 +535,11 @@ function useDashboardState() {
     strategyEarnings,
     connectedOwner,
     ownerEarnings,
+    ownerRealized,
+    ownerUnrealized,
+    vaultRealized,
+    vaultUnrealized,
+    riskHandler,
     sharePrice,
     ownerPercent,
     requiresApproval,
@@ -493,4 +639,55 @@ export function strategyLabel(
 
 function errorMessage(error: unknown): string {
   return (error as Error).message.split("\n")[0] ?? "Transaction failed";
+}
+
+type WithdrawalRequestView = {
+  receiver: string;
+  assets: bigint;
+  requestedAt: bigint;
+  processed: boolean;
+};
+
+function asWithdrawalRequest(result: unknown): WithdrawalRequestView | undefined {
+  if (!result) return undefined;
+  if (Array.isArray(result) && result.length >= 4) {
+    return {
+      receiver: String(result[0]),
+      assets: result[1] as bigint,
+      requestedAt: result[2] as bigint,
+      processed: Boolean(result[3]),
+    };
+  }
+  if (typeof result === "object" && result !== null && "receiver" in result) {
+    const request = result as WithdrawalRequestView;
+    return {
+      receiver: String(request.receiver),
+      assets: request.assets,
+      requestedAt: request.requestedAt,
+      processed: Boolean(request.processed),
+    };
+  }
+  return undefined;
+}
+
+export function ownerPendingWithdrawals(
+  account: string,
+  queueHead: bigint,
+  requests: Array<{ requestId: bigint; result: unknown }>,
+): PendingWithdrawal[] {
+  if (!account || account === zeroAddress) return [];
+  const owner = account.toLowerCase();
+  const pending: PendingWithdrawal[] = [];
+  for (const { requestId, result } of requests) {
+    const request = asWithdrawalRequest(result);
+    if (!request || request.processed) continue;
+    if (request.receiver.toLowerCase() !== owner) continue;
+    pending.push({
+      requestId,
+      assets: request.assets,
+      requestedAt: request.requestedAt,
+      queuePosition: Number(requestId - queueHead) + 1,
+    });
+  }
+  return pending;
 }

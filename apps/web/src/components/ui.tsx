@@ -59,17 +59,29 @@ export function PageIntro({
 }
 
 export function StrategyStatus() {
-  const { strategyState, analytics, paused } = useVaultDashboard();
+  const { strategyState, analytics, paused, metrics } = useVaultDashboard();
+  const watchdog = metrics?.watchdog;
+  const label =
+    watchdog?.checks.withdrawals === "stalled"
+      ? "Queue stalled"
+      : watchdog?.checks.operator === "offline"
+        ? "Operator offline"
+        : watchdog?.checks.riskHandler === "not_subscribed"
+          ? "Risk unsubscribed"
+          : strategyLabel(strategyState);
+  const detail =
+    watchdog?.reasons[0] ??
+    analytics?.strategy?.reason ??
+    (paused ? "Emergency halt is active" : "Operator data unavailable");
+  const stateClass =
+    watchdog?.level === "unhealthy" ? "offline" : strategyState;
   return (
-    <div className={`strategy-pill ${strategyState}`}>
+    <div className={`strategy-pill ${stateClass}`}>
       <span className="pulse" />
       <div>
         <small>STRATEGY</small>
-        <strong>{strategyLabel(strategyState)}</strong>
-        <span>
-          {analytics?.strategy?.reason ??
-            (paused ? "Emergency halt is active" : "Operator data unavailable")}
-        </span>
+        <strong>{label}</strong>
+        <span>{detail}</span>
       </div>
     </div>
   );

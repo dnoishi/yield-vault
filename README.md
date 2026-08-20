@@ -29,7 +29,16 @@ Copy `.env.example` to `.env` before running deployment scripts or the operator.
 Defaults target WETH:USDso on Shannon testnet. Mainnet deployments are capped
 and gated until legal review and an external contract audit are complete.
 
-See `docs/architecture.md` and `docs/operator-runbook.md`.
+## Reference documentation
+
+- [Architecture and trust model](docs/architecture.md)
+- [Build an ERC-4626 vault on DreamDEX](docs/building-a-dreamdex-vault.md)
+- [Operator and incident runbook](docs/operator-runbook.md)
+- [Local and Shannon deployment](docs/deployment.md)
+
+Together these documents make the repository an executable reference for
+ERC-4626 ownership, scoped DreamDEX operator delegation, FIFO withdrawal
+liquidity, and Somnia reactive risk controls.
 
 ## Full local stack
 

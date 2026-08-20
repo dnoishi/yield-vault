@@ -1,4 +1,5 @@
 import {
+  QUEUE_STATUS_TITLE,
   capacity,
   format,
   formatInput,
@@ -7,6 +8,7 @@ import {
   tone,
   useVaultDashboard,
 } from "../hooks/useVaultDashboard";
+import { Link } from "react-router-dom";
 import { Metric, PageIntro, Stat } from "../components/ui";
 
 export function Vault() {
@@ -32,22 +34,32 @@ export function Vault() {
     positionAssets,
     period,
     ownerEarnings,
+    ownerRealized,
+    ownerUnrealized,
     connectedOwner,
     ownerPercent,
     redeemAssets,
     canInstantRedeem,
     queueHead,
+    queueLength,
+    pendingWithdrawals,
+    pendingClaimAssets,
+    hasPendingWithdrawals,
     redeemRaw,
     totalAssets,
     sharePrice,
     queued,
+    idle,
+    assetBalance,
   } = dashboard;
+  const nextClaim = pendingWithdrawals[0];
+  const queueRoute = canInstantRedeem ? "Instant redemption" : QUEUE_STATUS_TITLE;
 
   return (
     <>
       <PageIntro eyebrow="THE VAULT" title="Enter the dream economy.">
-        Deposit USDso to mint yvUSDso shares, or redeem your position through
-        instant liquidity and the on-chain withdrawal queue.
+        Deposit USDso to mint yvUSDso shares. Redeem instantly from idle USDso,
+        or queue a withdrawal that pays out as liquidity frees.
       </PageIntro>
 
       <section className="compact-stats stats-grid">
@@ -93,7 +105,16 @@ export function Vault() {
           >
             {paused ? "Vault halted" : depositMode === "deposit" ? "Deposit USDso" : "Mint shares"}
           </button>
+          <p className="risk-note">
+            Share price can go down. This is a market-making vault, not a
+            savings account. Yield is variable and principal is at risk.
+          </p>
           {!isConnected && <p className="action-note">Connect a wallet to continue.</p>}
+          {isConnected && assetBalance === 0n && (
+            <p className="action-note">
+              Need funds? <Link className="inline-link" to="/swap">Mint testnet USDso</Link>.
+            </p>
+          )}
           {requiresApproval && requiredAssets > 0n && (
             <p className="action-note">
               {supportsAtomicBatch
@@ -115,10 +136,47 @@ export function Vault() {
               value={ownerEarnings === undefined ? "Unavailable" : signedMoney(ownerEarnings)}
               tone={ownerEarnings === undefined ? "" : tone(ownerEarnings)}
             />
+            <Metric
+              label="Realized P&L"
+              value={signedMoney(ownerRealized)}
+              tone={tone(ownerRealized)}
+            />
+            <Metric
+              label="Unrealized P&L"
+              value={signedMoney(ownerUnrealized)}
+              tone={tone(ownerUnrealized)}
+            />
             <Metric label="Carried cost basis" value={connectedOwner ? money(BigInt(connectedOwner.costBasis)) : "$0.00"} />
-            <Metric label="Pending claims" value={connectedOwner ? money(BigInt(connectedOwner.pendingClaims)) : "$0.00"} />
+            <Metric label="Pending claims" value={money(pendingClaimAssets)} />
             <Metric label="Vault ownership" value={ownerPercent} />
           </div>
+          {hasPendingWithdrawals && (
+            <div className="queue-status" role="status">
+              <small>YOUR WITHDRAWAL</small>
+              <strong>{QUEUE_STATUS_TITLE}</strong>
+              <p>
+                Your shares were already burned at the request NAV. USDso pays
+                out when idle vault balance covers your place in the FIFO
+                queue. Resting DreamDEX orders count toward NAV but not toward
+                this payout until they fill or are cancelled.
+              </p>
+              <div className="queue-status-metrics">
+                <Metric label="Your queued claim" value={money(pendingClaimAssets)} />
+                <Metric
+                  label="Queue position"
+                  value={
+                    nextClaim
+                      ? `${nextClaim.queuePosition} of ${Math.max(queueLength, nextClaim.queuePosition)}`
+                      : queueLength > 0
+                        ? `In queue of ${queueLength}`
+                        : "Waiting"
+                  }
+                />
+                <Metric label="Idle available" value={money(idle)} />
+                <Metric label="Vault queued" value={money(queued)} />
+              </div>
+            </div>
+          )}
           <label htmlFor="redeem-amount">Shares to redeem</label>
           <div className="amount">
             <input
@@ -132,7 +190,7 @@ export function Vault() {
           </div>
           <div className="transaction-details">
             <Metric label="You receive" value={money(redeemAssets)} />
-            <Metric label="Route" value={canInstantRedeem ? "Instant redemption" : "FIFO withdrawal queue"} />
+            <Metric label="Route" value={queueRoute} />
           </div>
           <button
             className="primary-button secondary"
@@ -142,7 +200,9 @@ export function Vault() {
             {paused ? "Vault halted" : canInstantRedeem ? "Redeem now" : "Request withdrawal"}
           </button>
           <p className="action-note">
-            Queue head #{queueHead.toString()}. Queued claims receive priority over instant exits.
+            {canInstantRedeem
+              ? `Paid from idle USDso in the vault. Queue head #${queueHead.toString()}.`
+              : `Shares burn now at the current NAV. Funds pay out as idle liquidity frees. Resting orders stay in NAV until they fill or cancel. Queue head #${queueHead.toString()}.`}
           </p>
         </div>
       </section>
